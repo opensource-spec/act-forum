@@ -1,0 +1,29 @@
+{
+  "name": "act-forum",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "author": "@hexmisery",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "start": "node --env-file-if-exists=.env server/index.mjs",
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "react": "19.2.6",
+    "react-dom": "19.2.6",
+    "lucide-react": "1.31.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.0",
+    "typescript": "5.9.3",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3"
+  },
+  "allowScripts": {
+    "esbuild@0.28.0": true
+  }
+}
