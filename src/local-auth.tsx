@@ -21,7 +21,9 @@ export default function LocalAuth({ lang, onDone }: { lang: 'hy' | 'en'; onDone:
       if (!res.ok) {
         const data = (await res.json()) as { error?: string };
         setError(
-          data.error === 'USERNAME_TAKEN'
+          data.error === 'ACCOUNT_BANNED'
+            ? en ? 'This account has been banned.' : 'Այս հաշիվն արգելափակված է։'
+            : data.error === 'USERNAME_TAKEN'
             ? en
               ? 'Username is already taken.'
               : 'Այս օգտանունն արդեն զբաղված է։'

@@ -19,11 +19,19 @@ import {
   Share2,
   UserRound,
   Check,
-  Send,
   Trash2,
+  Shield,
+  Lock,
+  Pin,
+  Users,
 } from 'lucide-react';
-import { communities, seeds } from '../lib/forum-data';
+import { communities as defaultCommunities, seeds } from '../lib/forum-data';
+import Communities, { type Community, type CommunityRequest, type CommunityAction } from './communities';
 import LocalAuth from './local-auth';
+import Comments, { type CommentAction } from './comments';
+import Moderation, { type ModerationAction } from './moderation';
+import { readRoute, routeURL, uniquePosts, type ForumRoute, type ForumView } from '../lib/forum-navigation';
+import type { ForumComment } from '../lib/comment-threads';
 import { copy, type Lang } from '../lib/forum-copy';
 type Post = {
   id: string;
@@ -34,60 +42,72 @@ type Post = {
   created: number;
   score: number;
   tag: string;
+  locked: boolean;
+  canDelete: number;
 };
-type Comment = { id: string; post: string; author: string; body: string; created: number };
 type Data = {
-  posts: Omit<Post, 'score' | 'tag'>[];
-  comments: Comment[];
+  communities: Community[];
+  submissions: CommunityRequest[];
+  posts: Omit<Post, 'score' | 'tag' | 'locked'>[];
+  comments: ForumComment[];
   votes: { post: string; score: number }[];
   mine: { post: string; value: number }[];
   saved: { post: string }[];
   joins: { community: string }[];
-  user: { name: string } | null;
+  controls: { post: string; removed: number; locked: number; pinned: number | null }[];
+  user: { name: string; role: 'member' | 'moderator' } | null;
 };
 type ForumAction =
   | { action: 'post'; title: string; body: string; community: string }
-  | { action: 'comment'; post: string; body: string }
+  | CommentAction
+  | CommunityAction
+  | ModerationAction
   | { action: 'vote'; post: string; value: number }
   | { action: 'save'; post: string; value: boolean }
   | { action: 'join'; community: string; value: boolean }
   | { action: 'report'; post: string }
-  | { action: 'delete'; post: string }
-  | { action: 'delete_comment'; commentId: string };
+  | { action: 'delete'; post: string };
 
 const initial: Data = {
+  communities: defaultCommunities,
+  submissions: [],
   posts: [],
   comments: [],
   votes: [],
   mine: [],
   saved: [],
   joins: [],
+  controls: [],
   user: null,
 };
 export default function Forum() {
   const [lang, setLang] = useState<Lang>('hy'),
     [data, setData] = useState<Data>(initial),
-    [view, setView] = useState('home'),
-    [community, setCommunity] = useState('all'),
-    [sort, setSort] = useState('hot'),
+    [route, setRoute] = useState<ForumRoute>(() => readRoute(location.search)),
+    [sort, setSort] = useState('new'),
     [query, setQuery] = useState(''),
     [modal, setModal] = useState(''),
-    [selected, setSelected] = useState<string | null>(null),
     [menu, setMenu] = useState(false),
     [toast, setToast] = useState(''),
     [busy, setBusy] = useState(false),
     [failure, setFailure] = useState(false),
+    [loaded, setLoaded] = useState(false),
+    [revision, setRevision] = useState(0),
     [title, setTitle] = useState(''),
     [body, setBody] = useState(''),
-    [draftCommunity, setDraftCommunity] = useState('general'),
-    [comment, setComment] = useState('');
+    [draftCommunity, setDraftCommunity] = useState('general');
   const t = copy[lang];
+  const communities = data.communities;
+  const { view, community, post: selected } = route;
+  const isModerator = data.user?.role === 'moderator';
   async function load() {
     try {
       const r = await fetch('/api/forum');
       if (!r.ok) throw Error();
       setData(await r.json());
       setFailure(false);
+      setLoaded(true);
+      setRevision((value) => value + 1);
     } catch {
       setFailure(true);
     }
@@ -116,7 +136,6 @@ export default function Forum() {
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         setModal('');
-        setSelected(null);
         setMenu(false);
       }
     };
@@ -124,9 +143,14 @@ export default function Forum() {
     return () => window.removeEventListener('keydown', handler);
   }, []);
   useEffect(() => {
-    const id = new URLSearchParams(location.search).get('post');
-    if (id) setSelected(id);
+    const onPopState = () => { setRoute(readRoute(location.search)); setMenu(false); setQuery(''); };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
   }, []);
+  useEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+    if (selected) document.getElementById('discussion-title')?.focus({ preventScroll: true });
+  }, [selected, view, community]);
   useEffect(() => {
     if (!modal) return;
     const previous = document.activeElement as HTMLElement;
@@ -159,13 +183,16 @@ export default function Forum() {
       previous?.focus();
     };
   }, [modal]);
-  const all: Post[] = [
-    ...seeds.map((p) => ({ ...p, title: p.title.hy, body: p.body.hy })),
+  const all: Post[] = uniquePosts([
+    ...seeds.map((p) => ({ ...p, title: p.title[lang], body: p.body[lang], canDelete: Number(isModerator) })),
     ...data.posts.map((p) => ({ ...p, score: 0, tag: 'discussion' })),
-  ].map((p) => ({
-    ...p,
-    score: p.score + Number(data.votes.find((v) => v.post === p.id)?.score || 0),
-  }));
+  ]).filter((p) => !data.controls.some((control) => control.post === p.id && control.removed))
+    .map((p) => {
+      const control = data.controls.find((item) => item.post === p.id);
+      return { ...p, locked: Boolean(control?.locked),
+        tag: control?.pinned == null ? p.tag : control.pinned ? 'pinned' : 'discussion',
+        score: p.score + Number(data.votes.find((v) => v.post === p.id)?.score || 0) };
+    });
   const posts = all
     .filter(
       (p) =>
@@ -177,18 +204,11 @@ export default function Forum() {
             .toLocaleLowerCase()
             .includes(query.toLocaleLowerCase())),
     )
-    .sort((a, b) =>
-      sort === 'new'
-        ? b.created - a.created
-        : sort === 'top'
-          ? b.score - a.score
-          : a.tag === 'pinned'
-            ? -1
-            : b.tag === 'pinned'
-              ? 1
-              : b.score - a.score,
-    );
+    .sort((a, b) => view === 'home' ? b.created - a.created || a.id.localeCompare(b.id) :
+      (sort === 'hot' ? Number(b.tag === 'pinned') - Number(a.tag === 'pinned') : 0) ||
+      (sort === 'new' ? b.created - a.created : b.score - a.score) || b.created - a.created || a.id.localeCompare(b.id));
   const current = all.find((p) => p.id === selected);
+  const activeCommunity = communities.find((c) => c.id === (current?.community || community)) || communities[0];
   async function mutate(input: ForumAction) {
     if (!data.user) {
       setModal('login');
@@ -203,10 +223,25 @@ export default function Forum() {
         body: JSON.stringify(input),
       });
       if (r.status === 401) {
+        await load();
         setModal('login');
         return false;
       }
       if (!r.ok) {
+        const response = await r.json().catch(() => ({}));
+        const communityErrors: Record<string, string> = { COMMUNITY_EXISTS: t.communityExists,
+          INVALID_COMMUNITY: t.invalidCommunity, COMMUNITY_NOT_PENDING: t.communityNotPending };
+        if (communityErrors[response.error]) {
+          setToast(communityErrors[response.error]);
+          if (response.error === 'COMMUNITY_NOT_PENDING') await load();
+          return false;
+        }
+        if (r.status === 403) {
+          setToast(response.error === 'DISCUSSION_LOCKED' ? t.discussionLocked :
+            response.error === 'ACCOUNT_BANNED' ? t.accountBanned : t.actionNotAllowed);
+          await load();
+          return false;
+        }
         setToast(
           r.status === 429
             ? lang === 'en'
@@ -217,6 +252,7 @@ export default function Forum() {
         return false;
       }
       await load();
+      if (input.action === 'create_community') setToast(t.communitySubmitted);
       return true;
     } catch {
       setToast(t.error);
@@ -225,17 +261,28 @@ export default function Forum() {
       setBusy(false);
     }
   }
-  function navigate(v: string, c = 'all') {
-    setView(v);
-    setCommunity(c);
-    setSelected(null);
+  function goTo(next: ForumRoute, postOpened = false) {
+    const url = routeURL(next);
+    if (url !== location.pathname + location.search) history.pushState({ postOpened }, '', url);
+    setRoute(next);
+  }
+  function openPost(id: string) {
+    goTo({ ...route, post: id }, true);
+    setMenu(false);
+  }
+  function backToFeed() {
+    if (history.state?.postOpened) history.back();
+    else navigate('discussions');
+  }
+  function navigate(v: ForumView, c = 'all') {
+    goTo({ view: v, community: c, post: null });
     setMenu(false);
     setQuery('');
     if (v === 'popular') setSort('top');
   }
   async function share(p: Post) {
     try {
-      await navigator.clipboard.writeText(location.origin + '/?post=' + encodeURIComponent(p.id));
+      await navigator.clipboard.writeText(location.origin + routeURL({ view: 'discussions', community: 'all', post: p.id }));
       setToast(t.copied);
     } catch {
       setToast(t.error);
@@ -243,11 +290,15 @@ export default function Forum() {
   }
   const iconSize = 19;
   function postCard(p: Post, detail = false) {
-    const c = communities.find((c) => c.id === p.community)!;
+    const c = communities.find((c) => c.id === p.community) || { id: p.community, en: p.community, hy: p.community, symbol: '◎' };
     const vote = data.mine.find((v) => v.post === p.id)?.value || 0;
     const saved = data.saved.some((s) => s.post === p.id);
     return (
-      <article className={'post ' + (p.tag === 'pinned' ? 'pinned' : '')} key={p.id}>
+      <article className={'post ' + (p.tag === 'pinned' ? 'pinned ' : '') + (detail ? 'post-detail' : 'post-preview')}
+        key={p.id} data-post-id={p.id}
+        onClick={detail ? undefined : (event) => {
+          if (!(event.target as HTMLElement).closest('button,a,input,select,textarea') && !window.getSelection()?.toString()) openPost(p.id);
+        }}>
         <div className="post-meta">
           <button
             aria-label={c[lang]}
@@ -265,10 +316,14 @@ export default function Forum() {
             · {data.posts.some((x) => x.id === p.id) ? t.latest : t.time}
           </span>
           {p.tag === 'pinned' && <span className="pin">↗ {t.pinned}</span>}
+          {p.locked && <span className="locked-badge"><Lock size={12} />{t.locked}</span>}
         </div>
-        <button className="post-title" onClick={() => setSelected(p.id)}>
-          {p.title}
-        </button>
+        {detail ? <h1 className="post-title" id="discussion-title" tabIndex={-1}>{p.title}</h1> :
+          <a className="post-title" href={routeURL({ ...route, post: p.id })} onClick={(event) => {
+            if (event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) {
+              event.preventDefault(); openPost(p.id);
+            }
+          }}>{p.title}</a>}
         <p className={'post-body ' + (detail ? 'full' : '')}>{p.body}</p>
 
         <div className="post-actions">
@@ -291,10 +346,10 @@ export default function Forum() {
               <ArrowDown size={17} />
             </button>
           </div>
-          <button aria-label={t.comments} onClick={() => setSelected(p.id)}>
+          <button aria-label={t.comments} onClick={() => detail ? document.getElementById('comments-title')?.scrollIntoView({ behavior: 'smooth', block: 'start' }) : openPost(p.id)}>
             <MessageCircle size={17} />
             <span>
-              {data.comments.filter((c) => c.post === p.id).length}{' '}
+              {data.comments.filter((c) => c.post === p.id && !c.deleted).length}{' '}
               <span className="action-label">{t.comments}</span>
             </span>
           </button>
@@ -311,15 +366,14 @@ export default function Forum() {
             <Bookmark size={16} fill={saved ? 'currentColor' : 'none'} />
             <span className="action-label">{saved ? t.unsave : t.save}</span>
           </button>
-          {data.user && p.author === data.user.name && (
+          {Boolean(p.canDelete) && (
             <button
-              aria-label="Delete"
+              aria-label={t.deleteDiscussion}
               disabled={busy}
               onClick={async () => {
-                const confirmMsg = lang === 'en' ? 'Delete this post?' : 'Ջնջե՞լ այս հրապարակումը:';
-                if (confirm(confirmMsg)) {
+                if (confirm(t.confirmDeleteDiscussion)) {
                   const success = await mutate({ action: 'delete', post: p.id });
-                  if (success && selected === p.id) setSelected(null);
+                  if (success && selected === p.id) navigate('discussions');
                 }
               }}
             >
@@ -338,6 +392,15 @@ export default function Forum() {
             </button>
           )}
         </div>
+        {detail && isModerator && <div className="post-moderation" aria-label={t.moderation}>
+          <span><Shield size={15} />{t.moderator}</span>
+          <button disabled={busy} onClick={() => mutate({ action: 'mod_lock', post: p.id, value: !p.locked })}>
+            <Lock size={14} />{p.locked ? t.unlockDiscussion : t.lockDiscussion}
+          </button>
+          <button disabled={busy} onClick={() => mutate({ action: 'mod_pin', post: p.id, value: p.tag !== 'pinned' })}>
+            <Pin size={14} />{p.tag === 'pinned' ? t.unpinDiscussion : t.pinDiscussion}
+          </button>
+        </div>}
       </article>
     );
   }
@@ -356,7 +419,7 @@ export default function Forum() {
             value={query}
             onChange={(e) => {
               setQuery(e.target.value);
-              setSelected(null);
+              if (selected || view === 'moderation') goTo({ view: 'discussions', community: 'all', post: null });
             }}
             placeholder={t.search}
             aria-label={t.search}
@@ -394,23 +457,27 @@ export default function Forum() {
           <div className="nav-main">
             {[
               { id: 'home', icon: Home, name: t.home },
+              { id: 'discussions', icon: MessageCircle, name: t.discussions },
+              { id: 'communities', icon: Users, name: t.communities },
               { id: 'popular', icon: Flame, name: t.popular },
               { id: 'saved', icon: Bookmark, name: t.saved },
             ].map((n) => (
               <button
                 key={n.id}
                 className={'nav-item ' + (view === n.id && community === 'all' ? 'active' : '')}
-                onClick={() => navigate(n.id)}
+                onClick={() => navigate(n.id as ForumView)}
               >
                 <n.icon size={iconSize} />
                 {n.name}
                 {n.id === 'home' && <span className="nav-dot" />}
               </button>
             ))}
+            {isModerator && <button className={'nav-item ' + (view === 'moderation' ? 'active' : '')}
+              onClick={() => navigate('moderation')}><Shield size={iconSize} />{t.moderation}</button>}
           </div>
-          <div className="sidebar-title">{t.communities}</div>
-          <nav>
-            {communities.slice(1).map((c) => (
+          <div className="sidebar-title">{t.sections}</div>
+          <nav aria-label={t.sections}>
+            {communities.slice(1).filter((c) => data.joins.some((j) => j.community === c.id)).map((c) => (
               <button
                 key={c.id}
                 className={'nav-item community-nav ' + (community === c.id ? 'active' : '')}
@@ -422,22 +489,34 @@ export default function Forum() {
               </button>
             ))}
           </nav>
-          <button className="explore" onClick={() => setModal('communities')}>
-            <Plus size={16} />
-            {t.explore}
-          </button>
+          {!data.joins.length && <p className="sidebar-empty">{t.noJoinedCommunities}</p>}
+          <div className="sidebar-footer">
+            <button onClick={() => setModal('rules')}>{t.guidelines}</button>
+            <button onClick={() => setModal('about')}>{t.aboutlink}</button>
+            <small>{t.author}</small>
+          </div>
         </aside>
-        <main>
-          <div className="feed-head">
+        <main className={selected ? 'discussion-page' : ''}>
+          {view === 'communities' && !selected ? <>
+            {failure && <div className="error-banner">{t.unavailable}<button onClick={load}>{t.retry}</button></div>}
+            <Communities lang={lang} communities={communities} joins={data.joins} submissions={data.submissions}
+              signedIn={Boolean(data.user)} busy={busy} query={query} onAction={mutate}
+              onOpen={(id) => navigate('home', id)} onSignIn={() => setModal('login')} />
+          </> : view === 'moderation' && !selected ? (isModerator ?
+            <Moderation lang={lang} busy={busy} revision={revision} onAction={mutate} onOpenPost={openPost} /> :
+            <div className="empty"><Shield size={32} /><p>{t.moderatorOnly}</p>
+              {!data.user && <button className="primary" onClick={() => setModal('login')}>{t.signin}</button>}
+            </div>) : <>
+          {!selected && <div className="feed-head">
             <div>
               <h2>
-                {view === 'saved'
+                {view === 'discussions' && community === 'all' ? t.allDiscussions : view === 'saved'
                   ? t.saved
                   : view === 'profile'
                     ? t.myposts
                     : community === 'all'
-                      ? t.feed
-                      : communities.find((c) => c.id === community)?.[lang]}
+                      ? view === 'home' ? t.newestPosts : t.feed
+                      : communities.find((c) => c.id === community)?.[lang] || t.communityUnavailable}
               </h2>
               <span>
                 {posts.length} {t.count}
@@ -462,7 +541,7 @@ export default function Forum() {
                 {lang === 'en' ? 'Sign out' : 'Դուրս գալ'}
               </button>
             )}
-            {community !== 'all' && (
+            {community !== 'all' && communities.some((c) => c.id === community) && (
               <button
                 className="join-small"
                 onClick={() =>
@@ -473,11 +552,11 @@ export default function Forum() {
                   })
                 }
               >
-                {data.joins.some((j) => j.community === community) ? t.joined : t.join}
+                {data.joins.some((j) => j.community === community) ? t.leaveCommunity : t.join}
               </button>
             )}
-          </div>
-          <div className="feed-toolbar">
+          </div>}
+          {!selected && view !== 'home' && <div className="feed-toolbar">
             <div className="sort-tabs">
               {[
                 { id: 'hot', icon: Flame, label: t.hot },
@@ -498,74 +577,27 @@ export default function Forum() {
               {community === 'all' ? t.all : communities.find((c) => c.id === community)?.[lang]}
               <ChevronDown size={14} />
             </button>
-          </div>
+          </div>}
           {failure && (
             <div className="error-banner">
               {t.unavailable}
               <button onClick={load}>{t.retry}</button>
             </div>
           )}
-          {selected && current ? (
-            <>
-              <button className="back" onClick={() => setSelected(null)}>
-                ← {t.back}
+          {selected ? (
+            <div className="discussion-content">
+              <button className="back" onClick={backToFeed}>
+                ← {t.backDiscussions}
               </button>
-              {postCard(current, true)}
-              <section className="comments-panel">
-                <h3>
-                  {t.comments}{' '}
-                  <span>{data.comments.filter((c) => c.post === current.id).length}</span>
-                </h3>
-                <form
-                  onSubmit={async (e) => {
-                    e.preventDefault();
-                    if (await mutate({ action: 'comment', post: current.id, body: comment }))
-                      setComment('');
-                  }}
-                >
-                  <textarea
-                    required
-                    maxLength={2000}
-                    value={comment}
-                    onChange={(e) => setComment(e.target.value)}
-                    placeholder={t.comment}
-                    aria-label={t.comment}
-                  />
-                  <button className="primary" disabled={busy || !comment.trim()}>
-                    <Send size={16} />
-                    {t.send}
-                  </button>
-                </form>
-                {data.comments
-                  .filter((c) => c.post === current.id)
-                  .map((c) => (
-                    <div className="comment" key={c.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                      <div style={{ display: 'flex', gap: '12px' }}>
-                        <div className="comment-avatar">{c.author[0].toUpperCase()}</div>
-                        <div>
-                          <b>u/{c.author}</b>
-                          <p>{c.body}</p>
-                        </div>
-                      </div>
-                      {data.user && c.author === data.user.name && (
-                        <button
-                          style={{ background: 'transparent', border: 'none', cursor: 'pointer', opacity: 0.7, padding: '4px' }}
-                          title={lang === 'en' ? 'Delete comment' : 'Ջնջել մեկնաբանությունը'}
-                          disabled={busy}
-                          onClick={async () => {
-                            const confirmMsg = lang === 'en' ? 'Delete this comment?' : 'Ջնջե՞լ այս մեկնաբանությունը:';
-                            if (confirm(confirmMsg)) {
-                              await mutate({ action: 'delete_comment', commentId: c.id });
-                            }
-                          }}
-                        >
-                          <Trash2 size={15} />
-                        </button>
-                      )}
-                    </div>
-                  ))}
-              </section>
-            </>
+              {current ? <>{postCard(current, true)}
+              <Comments key={current.id} postId={current.id} postAuthor={current.author}
+                comments={data.comments} user={data.user} lang={lang} busy={busy}
+                locked={current.locked && !isModerator}
+                onAction={mutate} onSignIn={() => setModal('login')} /></> :
+                <div className="empty" role="status">{loaded ? t.postUnavailable : t.loading}</div>}
+            </div>
+          ) : loaded && !communities.some((c) => c.id === community) ? (
+            <div className="empty" role="status">{t.communityUnavailable}</div>
           ) : posts.length ? (
             posts.map((p) => postCard(p))
           ) : (
@@ -578,7 +610,28 @@ export default function Forum() {
               </button>
             </div>
           )}
+          </>}
         </main>
+        <aside className="community-rail" aria-label={t.communityInfo}>
+          <section className="rail-card">
+            <div className="rail-banner"><span>{activeCommunity.symbol}</span><span>ACT / {activeCommunity.id === 'all' ? 'campus' : activeCommunity.id}</span></div>
+            <h3>{activeCommunity.id === 'all' ? t.welcome : activeCommunity[lang]}</h3>
+            <p>{activeCommunity.description || t.about}</p>
+            <div className="community-stats">
+              <div><b>{all.filter((p) => activeCommunity.id === 'all' || p.community === activeCommunity.id).length}</b><span>{t.count}</span></div>
+              <div><b>{communities.length - 1}</b><span>{t.sections}</span></div>
+            </div>
+            <button className="primary" onClick={() => { setDraftCommunity(activeCommunity.id === 'all' ? 'general' : activeCommunity.id); setModal(data.user ? 'create' : 'login'); }}><Plus size={16} />{t.create}</button>
+          </section>
+          <section className="rail-card community-rules">
+            <h3>{t.guidelines}</h3>
+            <ol>{[t.r1, t.r2, t.r3, t.r4].map((rule) => <li key={rule}>{rule}</li>)}</ol>
+          </section>
+          <section className="rail-card study-callout">
+            <span className="eyebrow">{t.trending}</span><h3>{t.notice}</h3><p>{t.noticebody}</p>
+            <button onClick={() => navigate('home', 'study')}>{t.browse}<ArrowUpRight size={15} /></button>
+          </section>
+        </aside>
       </div>
       {modal && (
         <div

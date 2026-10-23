@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { initializeDatabase, databaseAdapter } from './database.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const host = process.env.FORUM_HOST || '127.0.0.1',
@@ -25,47 +26,13 @@ if (
     'Set FORUM_HOST to 127.0.0.1 or your Radmin IPv4 address and FORUM_PORT to a port between 1024 and 65535.',
   );
 const origin = `http://${host}:${port}`;
-await mkdir(path.join(root, 'data'), { recursive: true });
-const db = new DatabaseSync(path.join(root, 'data', 'forum.sqlite'));
-db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000');
-db.exec(`CREATE TABLE IF NOT EXISTS local_users(id TEXT PRIMARY KEY,username TEXT NOT NULL UNIQUE,salt TEXT NOT NULL,hash TEXT NOT NULL,created INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS local_sessions(token TEXT PRIMARY KEY,user TEXT NOT NULL REFERENCES local_users(id),expires INTEGER NOT NULL);
-CREATE INDEX IF NOT EXISTS local_sessions_expiry ON local_sessions(expires);
-CREATE TABLE IF NOT EXISTS local_migrations(name TEXT PRIMARY KEY);`);
-const migrations = JSON.parse(await readFile(path.join(root, 'db', 'migrations.json'), 'utf8'));
-for (const migration of migrations) {
-  if (!db.prepare('SELECT name FROM local_migrations WHERE name=?').get(migration.name)) {
-    db.exec('BEGIN');
-    try {
-      db.exec(migration.sql.replaceAll('--> statement-breakpoint', ''));
-      db.prepare('INSERT INTO local_migrations(name) VALUES(?)').run(migration.name);
-      db.exec('COMMIT');
-    } catch (e) {
-      db.exec('ROLLBACK');
-      throw e;
-    }
-  }
-}
-const adapter = {
-  prepare(sql) {
-    return {
-      values: [],
-      bind(...values) {
-        this.values = values;
-        return this;
-      },
-      async all() {
-        return { results: db.prepare(sql).all(...this.values) };
-      },
-      async first() {
-        return db.prepare(sql).get(...this.values) || null;
-      },
-      async run() {
-        return db.prepare(sql).run(...this.values);
-      },
-    };
-  },
-};
+const databasePath = process.env.FORUM_DB_PATH
+  ? path.resolve(process.env.FORUM_DB_PATH)
+  : path.join(root, 'data', 'forum.sqlite');
+await mkdir(path.dirname(databasePath), { recursive: true });
+const db = new DatabaseSync(databasePath);
+initializeDatabase(db);
+const adapter = databaseAdapter(db);
 const context = new AsyncLocalStorage();
 globalThis.localForumDb = adapter;
 globalThis.localForumUser = () => context.getStore()?.user || null;
@@ -93,7 +60,7 @@ function session(req) {
   if (!token || !/^[-_a-zA-Z0-9]{43}$/.test(token)) return null;
   const user = db
     .prepare(
-      'SELECT u.id,u.username FROM local_sessions s JOIN local_users u ON u.id=s.user WHERE s.token=? AND s.expires>?',
+      'SELECT u.id,u.username FROM local_sessions s JOIN local_users u ON u.id=s.user WHERE s.token=? AND s.expires>? AND u.banned=0',
     )
     .get(digest(token), Date.now());
   return user ? { userId: user.id, displayName: user.username, email: 'local@invalid' } : null;
@@ -166,6 +133,7 @@ async function auth(req, res, route) {
   try {
     let user;
     if (route === '/auth/register') {
+      if (username === 'moderator') return send(res, 409, { error: 'USERNAME_TAKEN' });
       if (db.prepare('SELECT id FROM local_users WHERE username=?').get(username))
         return send(res, 409, { error: 'USERNAME_TAKEN' });
       const salt = randomBytes(16).toString('hex'),
@@ -184,7 +152,7 @@ async function auth(req, res, route) {
       }
     } else {
       user = db
-        .prepare('SELECT id,username,salt,hash FROM local_users WHERE username=?')
+        .prepare('SELECT id,username,salt,hash,banned FROM local_users WHERE username=?')
         .get(username);
       const result = await scryptAsync(
         password,
@@ -193,7 +161,11 @@ async function auth(req, res, route) {
       );
       if (!user || !timingSafeEqual(result, Buffer.from(user.hash, 'hex')))
         return send(res, 401, { error: 'INVALID_CREDENTIALS' });
+      if (user.banned) return send(res, 403, { error: 'ACCOUNT_BANNED' });
     }
+    // Recheck after password hashing: a concurrent moderation action may have removed or banned this account.
+    const activeUser = db.prepare('SELECT banned FROM local_users WHERE id=?').get(user.id);
+    if (!activeUser || activeUser.banned) return send(res, 403, { error: 'ACCOUNT_BANNED' });
     const token = randomBytes(32).toString('base64url');
     db.prepare('INSERT INTO local_sessions(token,user,expires) VALUES(?,?,?)').run(
       digest(token),
@@ -225,14 +197,16 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, origin),
       route = url.pathname;
     if (route.startsWith('/auth/')) return await auth(req, res, route);
-    if (route === '/api/forum') {
+    if (route === '/api/forum' || route === '/api/moderation') {
+      if (route === '/api/moderation' && req.method !== 'GET')
+        return send(res, 405, { error: 'METHOD_NOT_ALLOWED' });
       if (!['GET', 'POST'].includes(req.method))
         return send(res, 405, { error: 'METHOD_NOT_ALLOWED' });
       if (req.method === 'POST' && req.headers.origin !== origin)
         return send(res, 403, { error: 'INVALID_ORIGIN' });
       const response = await context.run({ user: session(req) }, () =>
         req.method === 'GET'
-          ? api.GET()
+          ? route === '/api/moderation' ? api.MODERATION_GET() : api.GET()
           : readBody(req).then((body) =>
               api.POST(
                 new Request(origin + route, {

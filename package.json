@@ -10,7 +10,9 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "start": "node --env-file-if-exists=.env server/index.mjs",
-    "check": "tsc --noEmit"
+    "create:moderator": "node --env-file-if-exists=.env scripts/create-moderator.mjs",
+    "check": "tsc --noEmit",
+    "test": "npm run build && node --test test/*.test.mjs"
   },
   "dependencies": {
     "react": "19.2.6",
