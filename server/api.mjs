@@ -14,7 +14,7 @@ async function getActor(db) {
   const session = globalThis.localForumUser();
   if (!session) return null;
   // Permissions always come from the database, never a request or a cached role.
-  return db.prepare('SELECT id AS userId,username AS displayName,role,banned FROM local_users WHERE id=?')
+  return db.prepare('SELECT id AS userId,username AS displayName,role,banned,avatar_version FROM local_users WHERE id=?')
     .bind(session.userId).first();
 }
 
@@ -53,7 +53,8 @@ async function GET() {
       saved: saved.results, joins: joins.results, mine: mine.results, controls: controls.results,
       communities: [...communities, ...published.results.map((c) => ({ ...c, symbol: '◎' }))],
       submissions: submissions.results,
-      user: user ? { name: user.displayName, role: user.role } : null });
+      user: user ? { name: user.displayName, role: user.role,
+        avatar: user.avatar_version ? `/api/avatars/${user.userId}?v=${user.avatar_version}` : null } : null });
   } catch {
     return json({ error: 'Could not load discussions' }, 503);
   }

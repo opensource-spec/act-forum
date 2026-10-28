@@ -33,6 +33,14 @@ Any signed-in, active member or moderator can submit a community from the Commun
 
 Moderators review requests in Moderation, where they can approve or reject them with optional feedback. Approval publishes the community and automatically joins its creator. Members can then join, leave, and create posts in it. Pending or rejected communities cannot be joined or posted to. Creating a community does not grant moderator permissions. Existing communities and memberships are preserved by the database migration on startup.
 
+## Profiles
+
+Open the profile icon in the top-right corner to see your profile, activity counts, and posts. The profile supports English and Armenian and retains the forum's green theme.
+
+- Upload a JPG, PNG, or WebP picture up to 5 MB (up to 16 megapixels). The browser crops it to a 320-pixel square PNG; the server validates its contents and removes metadata. Pictures are stored with accounts in the local SQLite database and are not committed to Git. You can replace or remove your picture.
+- Under **Account settings**, change your username using 3–24 letters, numbers, underscores, or hyphens. Names are normalized to lowercase and must be unique. Existing posts and comments update to the new name, and login uses the new username. Moderator log entries retain the name used at the time of the action.
+- To change your password, enter the current password and enter the new password twice. The new password must contain 10–128 characters. A successful change revokes all previous sessions and issues a new session for the current browser.
+
 ## Moderation
 
 Sign in as a moderator to see **Moderation / Մոդերացիա** in the sidebar. Moderators can remove any discussion or comment, lock or pin discussions, review and dismiss reports, ban or unban members, and delete member accounts. Actions are recorded in the moderation log. Authorization is enforced on the server, not just by hiding buttons.

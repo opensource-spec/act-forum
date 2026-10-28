@@ -7,6 +7,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { initializeDatabase, databaseAdapter } from './database.mjs';
+import { cleanAvatar } from './avatar.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const host = process.env.FORUM_HOST || '127.0.0.1',
@@ -65,7 +66,7 @@ function session(req) {
     .get(digest(token), Date.now());
   return user ? { userId: user.id, displayName: user.username, email: 'local@invalid' } : null;
 }
-async function readBody(req, max = 20000) {
+async function readBody(req, max = 20000, binary = false) {
   let size = 0;
   const chunks = [];
   for await (const chunk of req) {
@@ -77,7 +78,8 @@ async function readBody(req, max = 20000) {
     }
     chunks.push(chunk);
   }
-  return Buffer.concat(chunks).toString('utf8');
+  const body = Buffer.concat(chunks);
+  return binary ? body : body.toString('utf8');
 }
 function send(res, status, data, headers = {}) {
   res.writeHead(status, {
@@ -164,8 +166,10 @@ async function auth(req, res, route) {
       if (user.banned) return send(res, 403, { error: 'ACCOUNT_BANNED' });
     }
     // Recheck after password hashing: a concurrent moderation action may have removed or banned this account.
-    const activeUser = db.prepare('SELECT banned FROM local_users WHERE id=?').get(user.id);
+    const activeUser = db.prepare('SELECT banned,hash FROM local_users WHERE id=?').get(user.id);
     if (!activeUser || activeUser.banned) return send(res, 403, { error: 'ACCOUNT_BANNED' });
+    if (route === '/auth/login' && activeUser.hash !== user.hash)
+      return send(res, 401, { error: 'INVALID_CREDENTIALS' });
     const token = randomBytes(32).toString('base64url');
     db.prepare('INSERT INTO local_sessions(token,user,expires) VALUES(?,?,?)').run(
       digest(token),
@@ -177,6 +181,76 @@ async function auth(req, res, route) {
     activeAuth--;
   }
 }
+async function profile(req, res, route) {
+  const actor = session(req);
+  if (!actor) return send(res, 401, { error: 'SIGN_IN_REQUIRED' });
+  const user = db.prepare('SELECT id,username,role,created,avatar_version,salt,hash FROM local_users WHERE id=?').get(actor.userId);
+  if (route === '/api/profile' && req.method === 'GET') {
+    return send(res, 200, { username: user.username, role: user.role, created: user.created,
+      avatar: user.avatar_version ? `/api/avatars/${user.id}?v=${user.avatar_version}` : null });
+  }
+  if (req.headers.origin !== origin) return send(res, 403, { error: 'INVALID_ORIGIN' });
+  if (route === '/api/profile/avatar') {
+    if (!['PUT', 'DELETE'].includes(req.method)) return send(res, 405, { error: 'METHOD_NOT_ALLOWED' });
+    if (limited('avatar:' + user.id, 12)) return send(res, 429, { error: 'RATE_LIMIT' });
+    if (req.method === 'DELETE') {
+      db.prepare('UPDATE local_users SET avatar=NULL,avatar_version=0 WHERE id=?').run(user.id);
+      return send(res, 200, { ok: true });
+    }
+    if (req.headers['content-type'] !== 'image/png') return send(res, 415, { error: 'INVALID_IMAGE' });
+    const avatar = cleanAvatar(await readBody(req, 524288, true));
+    if (!avatar) return send(res, 400, { error: 'INVALID_IMAGE' });
+    if (!session(req)) return send(res, 401, { error: 'SIGN_IN_REQUIRED' });
+    db.prepare('UPDATE local_users SET avatar=?,avatar_version=? WHERE id=?').run(avatar, Date.now(), user.id);
+    return send(res, 200, { ok: true });
+  }
+  if (req.method !== 'POST') return send(res, 405, { error: 'METHOD_NOT_ALLOWED' });
+  if (!String(req.headers['content-type'] || '').startsWith('application/json'))
+    return send(res, 415, { error: 'INVALID_INPUT' });
+  if (limited('profile:' + user.id, 12)) return send(res, 429, { error: 'RATE_LIMIT' });
+  let input;
+  try { input = JSON.parse(await readBody(req, 3000)); }
+  catch { return send(res, 400, { error: 'INVALID_INPUT' }); }
+  if (!session(req)) return send(res, 401, { error: 'SIGN_IN_REQUIRED' });
+  if (input?.action === 'username') {
+    const username = typeof input.username === 'string' ? input.username.trim().toLowerCase() : '';
+    if (!/^[a-z0-9_-]{3,24}$/.test(username)) return send(res, 400, { error: 'INVALID_USERNAME' });
+    if ((username === 'moderator' && user.username !== username) ||
+      db.prepare('SELECT id FROM local_users WHERE username=? AND id<>?').get(username, user.id))
+      return send(res, 409, { error: 'USERNAME_TAKEN' });
+    await adapter.batch([
+      adapter.prepare('UPDATE local_users SET username=? WHERE id=?').bind(username, user.id),
+      adapter.prepare('UPDATE posts SET author=? WHERE owner=?').bind(username, user.id),
+      adapter.prepare('UPDATE comments SET author=? WHERE owner=?').bind(username, user.id),
+    ]);
+    return send(res, 200, { ok: true });
+  }
+  if (input?.action !== 'password') return send(res, 400, { error: 'INVALID_INPUT' });
+  const { currentPassword, newPassword, confirmPassword } = input;
+  if (typeof currentPassword !== 'string' || !currentPassword.length || currentPassword.length > 128 ||
+    typeof newPassword !== 'string' || newPassword.length < 10 || newPassword.length > 128)
+    return send(res, 400, { error: 'INVALID_PASSWORD' });
+  if (newPassword !== confirmPassword) return send(res, 400, { error: 'PASSWORD_MISMATCH' });
+  if (activeAuth >= 4 || limited('password:' + user.id, 6)) return send(res, 429, { error: 'RATE_LIMIT' });
+  activeAuth++;
+  try {
+    const currentHash = await scryptAsync(currentPassword, user.salt, 64);
+    if (!timingSafeEqual(currentHash, Buffer.from(user.hash, 'hex')))
+      return send(res, 400, { error: 'WRONG_PASSWORD' });
+    const salt = randomBytes(16).toString('hex');
+    const hash = (await scryptAsync(newPassword, salt, 64)).toString('hex');
+    const fresh = db.prepare('SELECT hash FROM local_users WHERE id=?').get(user.id);
+    if (!session(req) || fresh?.hash !== user.hash) return send(res, 401, { error: 'SIGN_IN_REQUIRED' });
+    const token = randomBytes(32).toString('base64url');
+    await adapter.batch([
+      adapter.prepare('UPDATE local_users SET salt=?,hash=? WHERE id=?').bind(salt, hash, user.id),
+      adapter.prepare('DELETE FROM local_sessions WHERE user=?').bind(user.id),
+      adapter.prepare('INSERT INTO local_sessions(token,user,expires) VALUES(?,?,?)').bind(digest(token), user.id, Date.now() + 604800000),
+    ]);
+    return send(res, 200, { ok: true }, { 'Set-Cookie': cookie(token) });
+  } finally { activeAuth--; }
+}
+
 const server = http.createServer(async (req, res) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
@@ -197,6 +271,13 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, origin),
       route = url.pathname;
     if (route.startsWith('/auth/')) return await auth(req, res, route);
+    if (route === '/api/profile' || route === '/api/profile/avatar') return await profile(req, res, route);
+    if (route.startsWith('/api/avatars/') && req.method === 'GET') {
+      const user = db.prepare('SELECT avatar FROM local_users WHERE id=?').get(route.slice('/api/avatars/'.length));
+      if (!user?.avatar) return send(res, 404, { error: 'NOT_FOUND' });
+      res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'no-store' });
+      return res.end(user.avatar);
+    }
     if (route === '/api/forum' || route === '/api/moderation') {
       if (route === '/api/moderation' && req.method !== 'GET')
         return send(res, 405, { error: 'METHOD_NOT_ALLOWED' });

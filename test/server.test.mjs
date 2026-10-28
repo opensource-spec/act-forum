@@ -110,3 +110,79 @@ test('moderator setup refuses to reset an existing account', () => {
   assert.notEqual(setup.status, 0);
   assert.equal(db.prepare('SELECT hash FROM local_users WHERE username=?').get('moderator').hash, before);
 });
+
+test('profiles support safe renaming, password confirmation and session rotation, and validated avatar uploads', async () => {
+  assert.equal((await request('/api/profile')).status, 401);
+  assert.equal((await request('/api/profile', { action: 'username', username: 'intruder' })).status, 401);
+  const registered = await request('/auth/register', { username: 'profile_member', password });
+  assert.equal(registered.status, 200);
+  const originalCookie = registered.cookie;
+  const otherSession = await request('/auth/login', { username: 'profile_member', password });
+  assert.equal(otherSession.status, 200);
+  const originalProfile = await request('/api/profile', null, originalCookie);
+  assert.equal(originalProfile.body.username, 'profile_member');
+  assert.equal(originalProfile.body.avatar, null);
+  assert.equal('hash' in originalProfile.body, false);
+  assert.equal('salt' in originalProfile.body, false);
+  const userId = db.prepare('SELECT id FROM local_users WHERE username=?').get('profile_member').id;
+  await mutation({ action: 'post', community: 'tech', title: 'My project', body: 'Original author.' }, originalCookie);
+  await mutation({ action: 'comment', post: 'welcome', body: 'My comment' }, originalCookie);
+  await mutation({ action: 'join', community: 'tech', value: true }, originalCookie);
+  const wrongOrigin = await fetch(base + '/api/profile', { method: 'POST',
+    headers: { Origin: 'https://other.example', Cookie: originalCookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'username', username: 'hijacked' }) });
+  assert.equal(wrongOrigin.status, 403);
+  assert.equal((await request('/api/profile', { action: 'username', username: 'bad name' }, originalCookie)).status, 400);
+  assert.equal((await request('/api/profile', { action: 'username', username: 'moderator' }, originalCookie)).status, 409);
+  assert.equal((await request('/api/profile', { action: 'username', username: 'Renamed_Member', role: 'moderator', userId: 'someone-else' }, originalCookie)).status, 200);
+  const renamed = db.prepare('SELECT id,username,role FROM local_users WHERE id=?').get(userId);
+  assert.equal(renamed.username, 'renamed_member'); assert.equal(renamed.role, 'member');
+  assert.equal(db.prepare('SELECT author FROM posts WHERE owner=?').get(userId).author, 'renamed_member');
+  assert.equal(db.prepare('SELECT author FROM comments WHERE owner=?').get(userId).author, 'renamed_member');
+  assert.equal((await request('/api/forum', null, otherSession.cookie)).body.user.name, 'renamed_member');
+  assert.equal((await request('/api/forum', null, originalCookie)).body.joins[0].community, 'tech');
+  assert.equal((await request('/auth/login', { username: 'profile_member', password })).status, 401);
+  const renamedLogin = await request('/auth/login', { username: 'renamed_member', password });
+  assert.equal(renamedLogin.status, 200);
+
+  const nextPassword = 'changed-test-password-only';
+  const change = { action: 'password', currentPassword: password, newPassword: nextPassword, confirmPassword: nextPassword };
+  const before = db.prepare('SELECT hash FROM local_users WHERE id=?').get(userId).hash;
+  assert.equal((await request('/api/profile', { ...change, currentPassword: 'wrong-password' }, originalCookie)).body.error, 'WRONG_PASSWORD');
+  assert.equal((await request('/api/profile', { ...change, confirmPassword: 'different-password' }, originalCookie)).body.error, 'PASSWORD_MISMATCH');
+  assert.equal((await request('/api/profile', { ...change, newPassword: 'short', confirmPassword: 'short' }, originalCookie)).body.error, 'INVALID_PASSWORD');
+  assert.equal(db.prepare('SELECT hash FROM local_users WHERE id=?').get(userId).hash, before);
+  const changed = await request('/api/profile', change, originalCookie);
+  assert.equal(changed.status, 200); assert.ok(changed.cookie); assert.notEqual(changed.cookie, originalCookie);
+  assert.notEqual(db.prepare('SELECT hash FROM local_users WHERE id=?').get(userId).hash, before);
+  for (const stale of [originalCookie, otherSession.cookie, renamedLogin.cookie])
+    assert.equal((await request('/api/profile', null, stale)).status, 401);
+  assert.equal((await request('/api/profile', null, changed.cookie)).status, 200);
+  assert.equal((await request('/auth/login', { username: 'renamed_member', password })).status, 401);
+  assert.equal((await request('/auth/login', { username: 'renamed_member', password: nextPassword })).status, 200);
+
+  const pixel = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
+  const upload = (body, contentType = 'image/png', sessionCookie = changed.cookie, method = 'PUT') => fetch(base + '/api/profile/avatar', {
+    method, headers: { Origin: base, Cookie: sessionCookie, 'Content-Type': contentType }, ...(body ? { body } : {}),
+  });
+  assert.equal((await upload(pixel, 'image/png', '')).status, 401);
+  assert.equal((await upload('<svg onload="alert(1)"></svg>', 'image/svg+xml')).status, 415);
+  assert.equal((await upload(Buffer.from('not a png'))).status, 400);
+  const corrupt = Buffer.from(pixel); corrupt[40] ^= 255;
+  assert.equal((await upload(corrupt)).status, 400);
+  assert.equal((await upload(Buffer.alloc(524289))).status, 413);
+  assert.equal((await upload(pixel)).status, 200);
+  const photoProfile = (await request('/api/profile', null, changed.cookie)).body;
+  assert.match(photoProfile.avatar, /^\/api\/avatars\//);
+  assert.equal((await request('/api/forum', null, changed.cookie)).body.user.avatar, photoProfile.avatar);
+  const image = await fetch(base + photoProfile.avatar);
+  assert.equal(image.status, 200); assert.equal(image.headers.get('content-type'), 'image/png');
+  assert.equal(image.headers.get('x-content-type-options'), 'nosniff');
+  assert.deepEqual(Buffer.from(await image.arrayBuffer()), pixel);
+  assert.equal((await upload(null, 'image/png', changed.cookie, 'DELETE')).status, 200);
+  assert.equal((await request('/api/profile', null, changed.cookie)).body.avatar, null);
+  assert.equal((await fetch(base + photoProfile.avatar)).status, 404);
+  db.prepare('UPDATE local_users SET banned=1 WHERE id=?').run(userId);
+  assert.equal((await upload(pixel)).status, 401);
+  assert.equal((await request('/api/profile', { action: 'username', username: 'banned_rename' }, changed.cookie)).status, 401);
+});

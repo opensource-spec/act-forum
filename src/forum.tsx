@@ -28,6 +28,7 @@ import {
 import { communities as defaultCommunities, seeds } from '../lib/forum-data';
 import Communities, { type Community, type CommunityRequest, type CommunityAction } from './communities';
 import LocalAuth from './local-auth';
+import Profile from './profile';
 import Comments, { type CommentAction } from './comments';
 import Moderation, { type ModerationAction } from './moderation';
 import { readRoute, routeURL, uniquePosts, type ForumRoute, type ForumView } from '../lib/forum-navigation';
@@ -55,7 +56,7 @@ type Data = {
   saved: { post: string }[];
   joins: { community: string }[];
   controls: { post: string; removed: number; locked: number; pinned: number | null }[];
-  user: { name: string; role: 'member' | 'moderator' } | null;
+  user: { name: string; role: 'member' | 'moderator'; avatar: string | null } | null;
 };
 type ForumAction =
   | { action: 'post'; title: string; body: string; community: string }
@@ -448,7 +449,7 @@ export default function Forum() {
             aria-label={data.user ? t.account : t.signin}
             onClick={() => (data.user ? navigate('profile') : setModal('login'))}
           >
-            <UserRound size={20} />
+            {data.user?.avatar ? <img src={data.user.avatar} alt="" /> : <UserRound size={20} />}
           </button>
         </div>
       </header>
@@ -497,7 +498,22 @@ export default function Forum() {
           </div>
         </aside>
         <main className={selected ? 'discussion-page' : ''}>
-          {view === 'communities' && !selected ? <>
+          {view === 'profile' && !selected ? (data.user ? <Profile lang={lang} name={data.user.name}
+            postCount={data.posts.filter((p) => p.author === data.user?.name).length}
+            commentCount={data.comments.filter((c) => !c.deleted && c.author === data.user?.name).length}
+            communityCount={data.joins.length} onChanged={load} onSignIn={() => setModal('login')}
+            onSignOut={async () => {
+              const response = await fetch('/auth/logout', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+              if (!response.ok) throw Error();
+              await load(); navigate('home');
+            }}>
+              {data.posts.filter((p) => p.author === data.user?.name).length ?
+                posts.filter((p) => data.posts.some((item) => item.id === p.id)).map((p) => postCard(p)) :
+                <div className="empty"><MessageCircle size={30} /><h3>{t.empty}</h3><p>{t.emptySub}</p>
+                  <button className="primary" onClick={() => setModal('create')}>{t.create}</button></div>}
+            </Profile> : <div className="empty"><UserRound size={32} /><p>{t.signin}</p>
+              <button className="primary" onClick={() => setModal('login')}>{t.signin}</button></div>) :
+          view === 'communities' && !selected ? <>
             {failure && <div className="error-banner">{t.unavailable}<button onClick={load}>{t.retry}</button></div>}
             <Communities lang={lang} communities={communities} joins={data.joins} submissions={data.submissions}
               signedIn={Boolean(data.user)} busy={busy} query={query} onAction={mutate}
@@ -512,9 +528,7 @@ export default function Forum() {
               <h2>
                 {view === 'discussions' && community === 'all' ? t.allDiscussions : view === 'saved'
                   ? t.saved
-                  : view === 'profile'
-                    ? t.myposts
-                    : community === 'all'
+                  : community === 'all'
                       ? view === 'home' ? t.newestPosts : t.feed
                       : communities.find((c) => c.id === community)?.[lang] || t.communityUnavailable}
               </h2>
@@ -522,25 +536,6 @@ export default function Forum() {
                 {posts.length} {t.count}
               </span>
             </div>
-            {view === 'profile' && (
-              <button
-                className="back"
-                onClick={async () => {
-                  try {
-                    await fetch('/auth/logout', {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                    });
-                    await load();
-                    navigate('home');
-                  } catch {
-                    setToast(t.error);
-                  }
-                }}
-              >
-                {lang === 'en' ? 'Sign out' : 'Դուրս գալ'}
-              </button>
-            )}
             {community !== 'all' && communities.some((c) => c.id === community) && (
               <button
                 className="join-small"
