@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { Camera, Check, KeyRound, LogOut, Shield, UserRound } from 'lucide-react';
+import { BadgeCheck, Camera, Check, KeyRound, LogOut, Shield, UserRound } from 'lucide-react';
 import { profileCopy } from '../lib/profile-copy';
 import type { Lang } from '../lib/forum-copy';
 
@@ -89,8 +89,8 @@ export default function Profile({ lang, name, postCount, commentCount, community
       <div className="profile-identity">
         <div className="profile-portrait">{profile.avatar ? <img src={profile.avatar} alt={t.photo} /> : <span>{profile.username.slice(0, 2).toUpperCase()}</span>}</div>
         <div className="profile-name"><span className="profile-role">{profile.role === 'moderator' ? <Shield size={13} /> : <UserRound size={13} />}{profile.role === 'moderator' ? t.moderator : t.member}</span>
-          <h1 id="profile-heading">u/{profile.username}</h1><p>{t.subtitle}</p>
-          {profile.bio && <p className="profile-bio">{profile.bio}</p>}
+          <h1 id="profile-heading"><span>u/{profile.username}</span>{profile.role === 'moderator' && <BadgeCheck className="moderator-verified" size={26} role="img" aria-label={lang === 'en' ? 'Verified moderator' : 'Հաստատված մոդերատոր'} />}</h1>
+          <p className="profile-bio">{profile.bio || t.subtitle}</p>
           <small>{t.since} {new Date(profile.created).toLocaleDateString(lang === 'hy' ? 'hy-AM' : 'en-US', { month: 'long', year: 'numeric' })}</small>
         </div>
         <button className="profile-signout" disabled={busy} onClick={async () => {

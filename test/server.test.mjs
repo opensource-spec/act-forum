@@ -8,6 +8,8 @@ import { fileURLToPath } from 'node:url';
 import net from 'node:net';
 import { once } from 'node:events';
 import { DatabaseSync } from 'node:sqlite';
+import sharp from 'sharp';
+import { randomBytes, createHash } from 'node:crypto';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const password = 'local-test-password-only';
@@ -65,6 +67,29 @@ async function mutation(input, cookie) {
   db.exec('DELETE FROM limits');
   return request('/api/forum', input, cookie);
 }
+
+test('real HTTP posts accept attachments above the former text limit and serve all photos', async () => {
+  const token = randomBytes(32).toString('base64url');
+  db.prepare('INSERT INTO local_sessions(token,user,expires) VALUES(?,?,?)').run(createHash('sha256').update(token).digest('hex'), db.prepare("SELECT id FROM local_users WHERE username='moderator'").get().id, Date.now()+60000);
+  const login = { cookie: 'campus_session=' + token };
+  const png = await sharp(randomBytes(256*256*3), { raw: { width:256, height:256, channels:3 } }).png().toBuffer();
+  const photo = { type:'image/png', data:png.toString('base64') };
+  assert.ok(photo.data.length > 20000);
+  const created = await mutation({ action:'post', title:'Three photos', body:'Upload regression', community:'tech', media:[photo,photo,photo] }, login.cookie);
+  assert.equal(created.status, 200, JSON.stringify(created.body));
+  const feed = await request('/api/forum');
+  const attachments = JSON.parse(feed.body.posts.find((p) => p.id === created.body.post).media);
+  assert.equal(attachments.length, 3);
+  for (const attachment of attachments) {
+    const response = await fetch(base + '/api/media/' + attachment.id);
+    assert.equal(response.status,200);
+    assert.equal(response.headers.get('content-type'),'image/webp');
+    assert.equal((await sharp(Buffer.from(await response.arrayBuffer())).metadata()).width,256);
+  }
+  const invalid = await mutation({ action:'post', title:'Too many', body:'Rejected', community:'tech', media:[photo,photo,photo,photo] }, login.cookie);
+  assert.equal(invalid.status,400);
+  assert.equal((await mutation({ action:'comment', post:created.body.post, body:'x'.repeat(13000) }, login.cookie)).status,413);
+});
 
 test('real HTTP sessions enforce role permissions, bans, unbans, and account deletion', async () => {
   assert.equal((await request('/api/moderation')).status, 401);

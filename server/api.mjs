@@ -97,13 +97,14 @@ async function POST(req) {
     if (!user) return json({ error: 'Sign in to participate' }, 401);
     if (user.banned) return json({ error: 'ACCOUNT_BANNED' }, 403);
     const moderator = user.role === 'moderator';
-    if (Number(req.headers.get('content-length') || 0) > 2e4) return json({ error: 'Request too large' }, 413);
+    if (Number(req.headers.get('content-length') || 0) > 57 * 1024 * 1024) return json({ error: 'Request too large' }, 413);
     const raw = await req.text();
-    if (raw.length > 12e3) return json({ error: 'Request too large' }, 413);
+    if (raw.length > 57 * 1024 * 1024) return json({ error: 'Request too large' }, 413);
     let input;
     try { input = JSON.parse(raw); } catch { return json({ error: 'Invalid request' }, 400); }
     if (!input || typeof input !== 'object' || typeof input.action !== 'string')
       return json({ error: 'Invalid request' }, 400);
+    if (input.action !== 'post' && raw.length > 12000) return json({ error: 'Request too large' }, 413);
     if (input.action.startsWith('mod_') && !moderator) return json({ error: 'Moderator access required' }, 403);
     const now = Date.now();
     const delay = ['post', 'create_community'].includes(input.action) ? 3e4 : input.action === 'comment' ? 5e3 : 1200;

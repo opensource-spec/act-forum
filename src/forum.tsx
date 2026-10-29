@@ -332,7 +332,7 @@ export default function Forum() {
             }
           }}>{p.title}</a>}
         <p className={'post-body ' + (detail ? 'full' : '')}>{p.body}</p>
-        <PostMedia media={p.media} />
+        <PostMedia media={p.media} lang={lang} />
 
         <div className="post-actions">
           <div className="vote">
@@ -644,13 +644,14 @@ export default function Forum() {
             if (e.target === e.currentTarget) setModal('');
           }}
         >
-          <section role="dialog" aria-modal="true" aria-labelledby="dialog-title" className={'modal' + (modal === 'login' ? ' auth-modal' : '')}>
+          <section role="dialog" aria-modal="true" aria-labelledby="dialog-title" className={'modal' + (modal === 'login' ? ' auth-modal' : modal === 'create' ? ' create-modal' : '')}>
             <button className="close" aria-label={t.close} onClick={() => setModal('')}>
               <X size={20} />
             </button>
             {modal === 'create' ? (
               <>
                 <h2 id="dialog-title">{t.create}</h2>
+                <p>{lang === 'en' ? 'Share a thought, a question, or something worth seeing.' : 'Կիսվիր մտքով, հարցով կամ հետաքրքիր պահով։'}</p>
                 <form
                   onSubmit={async (e) => {
                     e.preventDefault();
@@ -699,13 +700,13 @@ export default function Forum() {
                       placeholder={t.body}
                     />
                   </label>
-                  <MediaPicker lang={lang} onChange={setMedia} onBusy={setMediaBusy} />
+                  <MediaPicker value={media} lang={lang} onChange={setMedia} onBusy={setMediaBusy} disabled={busy} />
                   <div className="form-footer">
                     <small>{body.length}/5000</small>
                     <button type="button" onClick={() => setModal('')}>
                       {t.cancel}
                     </button>
-                    <button className="primary" disabled={busy || !title.trim() || !body.trim()}>
+                    <button className="primary" disabled={busy || mediaBusy || !title.trim() || !body.trim()}>
                       {busy ? '…' : t.publish}
                       <ArrowUpRight size={16} />
                     </button>
