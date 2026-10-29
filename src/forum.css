@@ -1056,3 +1056,7 @@ main {
 .auth-modal .auth-error { background: #46252b; border: 1px solid #80515a; border-radius: 10px; padding: 12px; color: #ffd4db; }
 .auth-footnote { border-top: 1px solid #303b36; padding-top: 18px; font-size: 12px; line-height: 1.7; color: #96a69b; text-align: center; }
 @media (max-width: 520px) { .modal.auth-modal { padding: 28px 22px; border-radius: 18px; } .auth-brand { margin-bottom: 24px; } }
+.post-media { display: grid; gap: 10px; margin: 12px 0; }
+.post-media img, .post-media video { display: block; width: 100%; max-height: 480px; object-fit: contain; background: #101719; border-radius: 12px; }
+.profile-bio { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 100%; }
+.profile-setting-card textarea { width: 100%; min-height: 100px; background: #101719; color: inherit; padding: 12px; border: 1px solid #394548; border-radius: 10px; }

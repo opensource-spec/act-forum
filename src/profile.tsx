@@ -3,7 +3,7 @@ import { Camera, Check, KeyRound, LogOut, Shield, UserRound } from 'lucide-react
 import { profileCopy } from '../lib/profile-copy';
 import type { Lang } from '../lib/forum-copy';
 
-type ProfileData = { username: string; role: string; created: number; avatar: string | null };
+type ProfileData = { username: string; role: string; created: number; avatar: string | null; bio: string };
 async function photoBlob(file: File): Promise<Blob> {
   if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type) || file.size > 5 * 1024 * 1024) throw Error('INVALID_IMAGE');
   const bitmap = await createImageBitmap(file);
@@ -26,6 +26,7 @@ export default function Profile({ lang, name, postCount, commentCount, community
   const t = profileCopy[lang];
   const [profile, setProfile] = useState<ProfileData | null>(null);
   const [username, setUsername] = useState(name);
+  const [bio, setBio] = useState('');
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -42,7 +43,7 @@ export default function Profile({ lang, name, postCount, commentCount, community
     const controller = new AbortController();
     fetch('/api/profile', { signal: controller.signal }).then(async (response) => {
       if (!response.ok) throw Error();
-      const data = await response.json(); setProfile(data); setUsername(data.username); setLoadError(false);
+      const data = await response.json(); setProfile(data); setUsername(data.username); setBio(data.bio || ''); setLoadError(false);
     }).catch(() => { if (!controller.signal.aborted) setLoadError(true); });
     return () => controller.abort();
   }, [name, retry]);
@@ -89,6 +90,7 @@ export default function Profile({ lang, name, postCount, commentCount, community
         <div className="profile-portrait">{profile.avatar ? <img src={profile.avatar} alt={t.photo} /> : <span>{profile.username.slice(0, 2).toUpperCase()}</span>}</div>
         <div className="profile-name"><span className="profile-role">{profile.role === 'moderator' ? <Shield size={13} /> : <UserRound size={13} />}{profile.role === 'moderator' ? t.moderator : t.member}</span>
           <h1 id="profile-heading">u/{profile.username}</h1><p>{t.subtitle}</p>
+          {profile.bio && <p className="profile-bio">{profile.bio}</p>}
           <small>{t.since} {new Date(profile.created).toLocaleDateString(lang === 'hy' ? 'hy-AM' : 'en-US', { month: 'long', year: 'numeric' })}</small>
         </div>
         <button className="profile-signout" disabled={busy} onClick={async () => {
@@ -109,6 +111,9 @@ export default function Profile({ lang, name, postCount, commentCount, community
       <button className={tab === 'settings' ? 'selected' : ''} aria-pressed={tab === 'settings'} onClick={() => setTab('settings')}>{t.settings}</button>
     </div>
     {tab === 'activity' ? children : <div className="profile-settings">
+      <form className="profile-setting-card" onSubmit={(e) => { e.preventDefault(); void save('/api/profile', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'bio', bio }) }, lang === 'en' ? 'Description updated.' : 'Նկարագրությունը թարմացվել է։'); }}>
+        <h2>{lang === 'en' ? 'About you' : 'Քո մասին'}</h2><label>{lang === 'en' ? 'Public description' : 'Հանրային նկարագրություն'}<textarea maxLength={300} value={bio} onChange={(e) => setBio(e.target.value)} /></label><small>{bio.length}/300</small><button className="primary" disabled={busy}>{lang === 'en' ? 'Save description' : 'Պահպանել նկարագրությունը'}</button>
+      </form>
       <form className="profile-setting-card" onSubmit={(e) => { e.preventDefault(); void save('/api/profile', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'username', username }),
       }, t.savedName); }}>

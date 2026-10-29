@@ -186,7 +186,7 @@ async function profile(req, res, route) {
   if (!actor) return send(res, 401, { error: 'SIGN_IN_REQUIRED' });
   const user = db.prepare('SELECT id,username,role,created,avatar_version,salt,hash FROM local_users WHERE id=?').get(actor.userId);
   if (route === '/api/profile' && req.method === 'GET') {
-    return send(res, 200, { username: user.username, role: user.role, created: user.created,
+    return send(res, 200, { bio: db.prepare('SELECT bio FROM local_users WHERE id=?').get(user.id).bio, username: user.username, role: user.role, created: user.created,
       avatar: user.avatar_version ? `/api/avatars/${user.id}?v=${user.avatar_version}` : null });
   }
   if (req.headers.origin !== origin) return send(res, 403, { error: 'INVALID_ORIGIN' });
@@ -212,6 +212,11 @@ async function profile(req, res, route) {
   try { input = JSON.parse(await readBody(req, 3000)); }
   catch { return send(res, 400, { error: 'INVALID_INPUT' }); }
   if (!session(req)) return send(res, 401, { error: 'SIGN_IN_REQUIRED' });
+  if (input?.action === 'bio') {
+    if (typeof input.bio !== 'string' || input.bio.length > 300) return send(res, 400, { error: 'INVALID_INPUT' });
+    db.prepare('UPDATE local_users SET bio=? WHERE id=?').run(input.bio.trim(), user.id);
+    return send(res, 200, { ok: true });
+  }
   if (input?.action === 'username') {
     const username = typeof input.username === 'string' ? input.username.trim().toLowerCase() : '';
     if (!/^[a-z0-9_-]{3,24}$/.test(username)) return send(res, 400, { error: 'INVALID_USERNAME' });
@@ -271,6 +276,19 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, origin),
       route = url.pathname;
     if (route.startsWith('/auth/')) return await auth(req, res, route);
+    if (route.startsWith('/api/media/') && req.method === 'GET') {
+      const media = db.prepare(`SELECT m.type,m.data FROM post_media m JOIN posts p ON p.id=m.post LEFT JOIN post_controls pc ON pc.post=p.id WHERE m.id=? AND COALESCE(pc.removed,0)=0`).get(route.slice(11));
+      if (!media) return send(res, 404, { error: 'NOT_FOUND' });
+      if (req.headers.range) {
+        const match = /^bytes=(\d+)-(\d*)$/.exec(req.headers.range);
+        const start = Number(match?.[1]), end = match?.[2] ? Number(match[2]) : media.data.length - 1;
+        if (!match || start > end || end >= media.data.length) { res.writeHead(416, { 'Content-Range': `bytes */${media.data.length}` }); return res.end(); }
+        res.writeHead(206, { 'Content-Type': media.type, 'Content-Length': end-start+1, 'Content-Range': `bytes ${start}-${end}/${media.data.length}`, 'Accept-Ranges': 'bytes', 'Cache-Control': 'no-store' });
+        return res.end(media.data.subarray(start,end+1));
+      }
+      res.writeHead(200, { 'Content-Type': media.type, 'Content-Length': media.data.length, 'Accept-Ranges': 'bytes', 'Cache-Control': 'no-store' });
+      return res.end(media.data);
+    }
     if (route.startsWith('/api/users/')) {
       if (req.method !== 'GET') return send(res, 405, { error: 'METHOD_NOT_ALLOWED' });
       const username = route.slice('/api/users/'.length);
@@ -279,7 +297,7 @@ const server = http.createServer(async (req, res) => {
       if (!user) return send(res, 404, { error: 'NOT_FOUND' });
       const posts = db.prepare(`SELECT p.id FROM posts p LEFT JOIN post_controls pc ON pc.post=p.id
         WHERE p.owner=? AND COALESCE(pc.removed,0)=0 ORDER BY p.created DESC,p.id`).all(user.id).map((p) => p.id);
-      return send(res, 200, { username: user.username, role: user.role, created: user.created,
+      return send(res, 200, { bio: db.prepare('SELECT bio FROM local_users WHERE id=?').get(user.id).bio, username: user.username, role: user.role, created: user.created,
         avatar: user.avatar_version ? `/api/avatars/${user.id}?v=${user.avatar_version}` : null, posts });
     }
     if (route === '/api/profile' || route === '/api/profile/avatar') return await profile(req, res, route);
@@ -299,7 +317,7 @@ const server = http.createServer(async (req, res) => {
       const response = await context.run({ user: session(req) }, () =>
         req.method === 'GET'
           ? route === '/api/moderation' ? api.MODERATION_GET() : api.GET()
-          : readBody(req).then((body) =>
+          : readBody(req, session(req) && req.headers.origin === origin ? 57 * 1024 * 1024 : 20000).then((body) =>
               api.POST(
                 new Request(origin + route, {
                   method: 'POST',

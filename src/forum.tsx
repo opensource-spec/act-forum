@@ -29,6 +29,7 @@ import { communities as defaultCommunities, seeds } from '../lib/forum-data';
 import Communities, { type Community, type CommunityRequest, type CommunityAction } from './communities';
 import LocalAuth from './local-auth';
 import Profile from './profile';
+import { MediaPicker, PostMedia, type Upload } from './post-media';
 import PublicProfile from './public-profile';
 import Comments, { type CommentAction } from './comments';
 import Moderation, { type ModerationAction } from './moderation';
@@ -36,6 +37,7 @@ import { readRoute, routeURL, uniquePosts, type ForumRoute, type ForumView } fro
 import type { ForumComment } from '../lib/comment-threads';
 import { copy, type Lang } from '../lib/forum-copy';
 type Post = {
+  media?: string;
   id: string;
   author: string;
   community: string;
@@ -60,7 +62,7 @@ type Data = {
   user: { name: string; role: 'member' | 'moderator'; avatar: string | null } | null;
 };
 type ForumAction =
-  | { action: 'post'; title: string; body: string; community: string }
+  | { action: 'post'; title: string; body: string; community: string; media?: Upload[] }
   | CommentAction
   | CommunityAction
   | ModerationAction
@@ -83,6 +85,8 @@ const initial: Data = {
   user: null,
 };
 export default function Forum() {
+  const [media, setMedia] = useState<Upload[]>([]);
+  const [mediaBusy, setMediaBusy] = useState(false);
   const [lang, setLang] = useState<Lang>('hy'),
     [data, setData] = useState<Data>(initial),
     [route, setRoute] = useState<ForumRoute>(() => readRoute(location.search)),
@@ -99,6 +103,7 @@ export default function Forum() {
     [body, setBody] = useState(''),
     [draftCommunity, setDraftCommunity] = useState('general');
   const t = copy[lang];
+  useEffect(() => { if (modal !== 'create') { setMedia([]); setMediaBusy(false); } }, [modal]);
   const communities = data.communities;
   const { view, community, post: selected } = route;
   const isModerator = data.user?.role === 'moderator';
@@ -231,7 +236,7 @@ export default function Forum() {
       }
       if (!r.ok) {
         const response = await r.json().catch(() => ({}));
-        const communityErrors: Record<string, string> = { COMMUNITY_EXISTS: t.communityExists,
+        const communityErrors: Record<string, string> = { INVALID_MEDIA: lang === 'en' ? 'Invalid media. Use up to 3 JPG/PNG/WebP photos (5 MB each) and one H.264/AAC MP4 (25 MB, 30 seconds).' : 'Սխալ ֆայլ։ Մինչև 3 նկար՝ 5 ՄԲ, և մեկ H.264/AAC MP4՝ 25 ՄԲ, 30 վայրկյան։', COMMUNITY_EXISTS: t.communityExists,
           INVALID_COMMUNITY: t.invalidCommunity, COMMUNITY_NOT_PENDING: t.communityNotPending };
         if (communityErrors[response.error]) {
           setToast(communityErrors[response.error]);
@@ -327,6 +332,7 @@ export default function Forum() {
             }
           }}>{p.title}</a>}
         <p className={'post-body ' + (detail ? 'full' : '')}>{p.body}</p>
+        <PostMedia media={p.media} />
 
         <div className="post-actions">
           <div className="vote">
@@ -648,7 +654,9 @@ export default function Forum() {
                 <form
                   onSubmit={async (e) => {
                     e.preventDefault();
-                    if (await mutate({ action: 'post', title, body, community: draftCommunity })) {
+                    if (mediaBusy) return;
+                    if (await mutate({ action: 'post', title, body, community: draftCommunity, media })) {
+                      setMedia([]);
                       setModal('');
                       setTitle('');
                       setBody('');
@@ -691,6 +699,7 @@ export default function Forum() {
                       placeholder={t.body}
                     />
                   </label>
+                  <MediaPicker lang={lang} onChange={setMedia} onBusy={setMediaBusy} />
                   <div className="form-footer">
                     <small>{body.length}/5000</small>
                     <button type="button" onClick={() => setModal('')}>

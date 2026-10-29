@@ -1,4 +1,5 @@
 import { seeds, communities } from '../lib/forum-data';
+import { validateMedia } from './post-media.mjs';
 
 const dynamic = 'force-dynamic';
 const json = (data, status = 200) =>
@@ -27,6 +28,7 @@ async function GET() {
     const moderator = user?.role === 'moderator';
     const [posts, comments, votes, saved, joins, mine, controls, published, submissions] = await Promise.all([
       db.prepare(`SELECT p.id,p.author,p.community,p.title,p.body,p.created,
+        (SELECT json_group_array(json_object('id',m.id,'type',m.type)) FROM post_media m WHERE m.post=p.id) AS media,
         CASE WHEN p.owner=? OR ?=1 THEN 1 ELSE 0 END AS canDelete
         FROM posts p LEFT JOIN post_controls pc ON pc.post=p.id
         WHERE COALESCE(pc.removed,0)=0 ORDER BY p.created DESC,p.id ASC`)
@@ -178,8 +180,12 @@ async function POST(req) {
         !await publishedCommunity(db, input.community))
         return json({ error: 'Check title, text and community' }, 400);
       const id = crypto.randomUUID();
-      await db.prepare('INSERT INTO posts(id,author,owner,community,title,body,created) VALUES(?,?,?,?,?,?,?)')
-        .bind(id, user.displayName, user.userId, input.community, input.title.trim(), input.body.trim(), now).run();
+      let media;
+      try { media = await validateMedia(input.media); } catch { return json({ error: 'INVALID_MEDIA' }, 400); }
+      if (!await getActor(db) || (await getActor(db)).banned) return json({ error: 'Unauthorized' }, 401);
+      await db.batch([db.prepare('INSERT INTO posts(id,author,owner,community,title,body,created) VALUES(?,?,?,?,?,?,?)')
+        .bind(id, user.displayName, user.userId, input.community, input.title.trim(), input.body.trim(), now),
+        ...media.map((m) => db.prepare('INSERT INTO post_media(id,post,type,data) VALUES(?,?,?,?)').bind(crypto.randomUUID(), id, m.type, m.bytes))]);
       return json({ ok: true, post: id });
     }
     if (input.action === 'join') {

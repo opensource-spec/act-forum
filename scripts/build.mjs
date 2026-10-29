@@ -23,6 +23,7 @@ await build({
   format: 'esm',
   platform: 'node',
   target: 'node24',
+  packages: 'external',
 });
 const css = await readFile(path.join(root, 'src/forum.css'), 'utf8');
 await writeFile(

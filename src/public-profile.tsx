@@ -3,7 +3,7 @@ import { MessageCircle, Shield, UserRound } from 'lucide-react';
 import { profileCopy } from '../lib/profile-copy';
 import type { Lang } from '../lib/forum-copy';
 
-type PublicUser = { username: string; role: string; created: number; avatar: string | null; posts: string[] };
+type PublicUser = { username: string; role: string; created: number; avatar: string | null; posts: string[]; bio: string };
 export default function PublicProfile({ username, lang, own, renderPosts }: {
   username: string; lang: Lang; own: boolean; renderPosts: (ids: string[]) => ReactNode;
 }) {
@@ -32,6 +32,7 @@ export default function PublicProfile({ username, lang, own, renderPosts }: {
         <div className="profile-portrait">{user.avatar ? <img src={user.avatar} alt={t.photo} /> : <span>{user.username.slice(0, 2).toUpperCase()}</span>}</div>
         <div className="profile-name"><span className="profile-role">{user.role === 'moderator' ? <Shield size={13} /> : <UserRound size={13} />}{user.role === 'moderator' ? t.moderator : t.member}</span>
           <h1 id="public-profile-title">u/{user.username}</h1><small>{t.since} {new Date(user.created).toLocaleDateString(en ? 'en-US' : 'hy-AM', { month: 'long', year: 'numeric' })}</small></div>
+        {user.bio && <p className="profile-bio">{user.bio}</p>}
         {own && <a className="profile-signout" href="/?view=profile">{t.settings}</a>}
       </div>
     </section>

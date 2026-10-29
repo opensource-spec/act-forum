@@ -117,6 +117,9 @@ test('profiles support safe renaming, password confirmation and session rotation
   const registered = await request('/auth/register', { username: 'profile_member', password });
   assert.equal(registered.status, 200);
   const originalCookie = registered.cookie;
+  assert.equal((await request('/api/profile', { action: 'bio', bio: 'a'.repeat(301) }, originalCookie)).status, 400);
+  assert.equal((await request('/api/profile', { action: 'bio', bio: 'Campus photographer' }, originalCookie)).status, 200);
+  assert.equal((await request('/api/users/profile_member')).body.bio, 'Campus photographer');
   const otherSession = await request('/auth/login', { username: 'profile_member', password });
   assert.equal(otherSession.status, 200);
   const originalProfile = await request('/api/profile', null, originalCookie);
@@ -130,7 +133,7 @@ test('profiles support safe renaming, password confirmation and session rotation
   await mutation({ action: 'join', community: 'tech', value: true }, originalCookie);
   const publicProfile = await request('/api/users/profile_member');
   assert.equal(publicProfile.status, 200);
-  assert.deepEqual(Object.keys(publicProfile.body).sort(), ['avatar', 'created', 'posts', 'role', 'username']);
+  assert.deepEqual(Object.keys(publicProfile.body).sort(), ['avatar', 'bio', 'created', 'posts', 'role', 'username']);
   assert.equal(publicProfile.body.username, 'profile_member');
   assert.equal(publicProfile.body.posts.length, 1);
   const publicPost = publicProfile.body.posts[0];
