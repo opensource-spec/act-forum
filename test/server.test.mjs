@@ -128,6 +128,17 @@ test('profiles support safe renaming, password confirmation and session rotation
   await mutation({ action: 'post', community: 'tech', title: 'My project', body: 'Original author.' }, originalCookie);
   await mutation({ action: 'comment', post: 'welcome', body: 'My comment' }, originalCookie);
   await mutation({ action: 'join', community: 'tech', value: true }, originalCookie);
+  const publicProfile = await request('/api/users/profile_member');
+  assert.equal(publicProfile.status, 200);
+  assert.deepEqual(Object.keys(publicProfile.body).sort(), ['avatar', 'created', 'posts', 'role', 'username']);
+  assert.equal(publicProfile.body.username, 'profile_member');
+  assert.equal(publicProfile.body.posts.length, 1);
+  const publicPost = publicProfile.body.posts[0];
+  db.prepare('INSERT INTO post_controls(post,removed) VALUES(?,1)').run(publicPost);
+  assert.deepEqual((await request('/api/users/profile_member')).body.posts, []);
+  db.prepare('DELETE FROM post_controls WHERE post=?').run(publicPost);
+  assert.equal((await request('/api/users/no_such_member')).status, 404);
+  assert.equal((await request('/api/users/profile_member', { username: 'hijacked' })).status, 405);
   const wrongOrigin = await fetch(base + '/api/profile', { method: 'POST',
     headers: { Origin: 'https://other.example', Cookie: originalCookie, 'Content-Type': 'application/json' },
     body: JSON.stringify({ action: 'username', username: 'hijacked' }) });

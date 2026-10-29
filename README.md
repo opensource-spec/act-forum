@@ -59,3 +59,7 @@ npm test
 The tests build the app and exercise migrations, reply validation, sorting, likes, ownership, moderation permissions, deletion, navigation, and rate limits. HTTP integration tests use a separate temporary database to verify real login cookies, ban/session revocation, account deletion, and moderator provisioning without altering the local forum data.
 
 For a preview with a separate database, set an absolute `FORUM_DB_PATH` and an unused `FORUM_PORT` before starting the server. Without these overrides, the original database and port 8080 are used.
+
+## Public profiles
+
+Click an author name on a post or comment to view their public profile, including their photo, role, join date, and visible posts. Profiles can be shared using `/?view=profile&user=USERNAME`. Renamed or deleted accounts return a profile-not-found page at their old URL. Account settings, passwords, saved posts, and joined communities remain private. Login and registration support English and Armenian, password visibility, and confirmation when creating an account.

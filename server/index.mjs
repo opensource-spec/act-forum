@@ -271,6 +271,17 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, origin),
       route = url.pathname;
     if (route.startsWith('/auth/')) return await auth(req, res, route);
+    if (route.startsWith('/api/users/')) {
+      if (req.method !== 'GET') return send(res, 405, { error: 'METHOD_NOT_ALLOWED' });
+      const username = route.slice('/api/users/'.length);
+      if (!/^[a-z0-9_-]{3,24}$/.test(username)) return send(res, 404, { error: 'NOT_FOUND' });
+      const user = db.prepare('SELECT id,username,role,created,avatar_version FROM local_users WHERE username=?').get(username);
+      if (!user) return send(res, 404, { error: 'NOT_FOUND' });
+      const posts = db.prepare(`SELECT p.id FROM posts p LEFT JOIN post_controls pc ON pc.post=p.id
+        WHERE p.owner=? AND COALESCE(pc.removed,0)=0 ORDER BY p.created DESC,p.id`).all(user.id).map((p) => p.id);
+      return send(res, 200, { username: user.username, role: user.role, created: user.created,
+        avatar: user.avatar_version ? `/api/avatars/${user.id}?v=${user.avatar_version}` : null, posts });
+    }
     if (route === '/api/profile' || route === '/api/profile/avatar') return await profile(req, res, route);
     if (route.startsWith('/api/avatars/') && req.method === 'GET') {
       const user = db.prepare('SELECT avatar FROM local_users WHERE id=?').get(route.slice('/api/avatars/'.length));

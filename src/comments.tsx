@@ -69,7 +69,7 @@ function Thread({ node, depth = 0, ...props }: Omit<Props, 'comments'> & { node:
             {collapsed ? <ChevronRight size={15} /> : <ChevronDown size={15} />}
           </button>
           <span className="comment-avatar" aria-hidden="true">{node.deleted ? '–' : node.author[0]?.toUpperCase()}</span>
-          <b>{name}</b>
+          {node.deleted ? <b>{name}</b> : <a className="author-link" href={'/?view=profile&user=' + encodeURIComponent(node.author)}>{name}</a>}
           {!node.deleted && node.author === props.postAuthor && <span className="op-badge">{t.originalPoster}</span>}
           <span className="dot">·</span>
           <time dateTime={date.toISOString()} title={date.toLocaleString(props.lang === 'hy' ? 'hy-AM' : 'en-US')}>

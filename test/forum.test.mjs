@@ -15,6 +15,13 @@ const moderator = { userId: 'moderator-id', displayName: 'moderator' };
 globalThis.localForumUser = () => user;
 const { GET, POST, MODERATION_GET } = await import('../dist/forum-api.mjs');
 
+test('public profile links survive reload and reject invalid usernames', () => {
+  const route = { view: 'profile', community: 'all', post: null, user: 'campus_member' };
+  assert.deepEqual(readRoute(routeURL(route).slice(1)), route);
+  assert.equal(readRoute('?view=profile&user=%3Cscript%3E').user, undefined);
+  assert.equal(readRoute('?view=home&user=campus_member').user, undefined);
+});
+
 beforeEach(() => {
   db = new DatabaseSync(':memory:');
   db.exec(`PRAGMA foreign_keys=ON;

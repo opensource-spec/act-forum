@@ -29,6 +29,7 @@ import { communities as defaultCommunities, seeds } from '../lib/forum-data';
 import Communities, { type Community, type CommunityRequest, type CommunityAction } from './communities';
 import LocalAuth from './local-auth';
 import Profile from './profile';
+import PublicProfile from './public-profile';
 import Comments, { type CommentAction } from './comments';
 import Moderation, { type ModerationAction } from './moderation';
 import { readRoute, routeURL, uniquePosts, type ForumRoute, type ForumView } from '../lib/forum-navigation';
@@ -312,7 +313,7 @@ export default function Forum() {
             {c[lang]}
           </button>
           <span className="dot">·</span>
-          <span>u/{p.author}</span>
+          {p.author === '[deleted]' || !data.posts.some((item) => item.id === p.id) ? <span>u/{p.author}</span> : <a className="author-link" href={'/?view=profile&user=' + encodeURIComponent(p.author)}>u/{p.author}</a>}
           <span className="post-date">
             · {data.posts.some((x) => x.id === p.id) ? t.latest : t.time}
           </span>
@@ -498,7 +499,9 @@ export default function Forum() {
           </div>
         </aside>
         <main className={selected ? 'discussion-page' : ''}>
-          {view === 'profile' && !selected ? (data.user ? <Profile lang={lang} name={data.user.name}
+          {view === 'profile' && route.user && !selected ? <PublicProfile key={route.user} username={route.user} lang={lang}
+            own={route.user === data.user?.name} renderPosts={(ids) => all.filter((p) => ids.includes(p.id)).sort((a, b) => b.created - a.created).map((p) => postCard(p))} /> :
+          view === 'profile' && !selected ? (data.user ? <Profile lang={lang} name={data.user.name}
             postCount={data.posts.filter((p) => p.author === data.user?.name).length}
             commentCount={data.comments.filter((c) => !c.deleted && c.author === data.user?.name).length}
             communityCount={data.joins.length} onChanged={load} onSignIn={() => setModal('login')}
@@ -635,7 +638,7 @@ export default function Forum() {
             if (e.target === e.currentTarget) setModal('');
           }}
         >
-          <section role="dialog" aria-modal="true" aria-labelledby="dialog-title" className="modal">
+          <section role="dialog" aria-modal="true" aria-labelledby="dialog-title" className={'modal' + (modal === 'login' ? ' auth-modal' : '')}>
             <button className="close" aria-label={t.close} onClick={() => setModal('')}>
               <X size={20} />
             </button>
